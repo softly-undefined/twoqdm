@@ -4,6 +4,10 @@
 the normal progress bar and adds a live terminal panel with recent `it/s`
 history, colored trend direction, jitter, and a smarter ETA hint.
 
+## Demo
+
+![twoqdm terminal progress demo](twoqdm-demo.gif)
+
 ## Install
 
 ```bash
