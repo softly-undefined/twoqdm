@@ -8,7 +8,6 @@ import re
 import shutil
 import sys
 import time
-from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import TypeVar
 
@@ -21,6 +20,7 @@ except ImportError as exc:  # pragma: no cover - useful when copied into project
 
 
 T = TypeVar("T")
+_ACTIVE_PANEL_DEPTH = 0
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 RESET = "\x1b[0m"
@@ -105,12 +105,35 @@ def percentile(values: list[float], pct: float) -> float:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
-def compact_rate(value: float) -> str:
+def compact_number(value: float) -> str:
     if value >= 1000:
-        return f"{value:.0f}"
-    if value >= 100:
-        return f"{value:.1f}"
-    return f"{value:.2f}"
+        text = f"{value:.0f}"
+    elif value >= 100:
+        text = f"{value:.1f}"
+    elif value >= 10:
+        text = f"{value:.1f}"
+    else:
+        text = f"{value:.2f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def format_rate(value: float) -> str:
+    if not math.isfinite(value) or value <= 0:
+        return "unknown"
+    if value < 1:
+        return f"{compact_number(1.0 / value)} s/it"
+    return f"{compact_number(value)} it/s"
+
+
+def compact_count(value: float | int) -> str:
+    numeric = float(value)
+    if numeric.is_integer():
+        return f"{int(numeric)}"
+    if numeric >= 1000:
+        return f"{numeric:.0f}"
+    if numeric >= 100:
+        return f"{numeric:.1f}"
+    return f"{numeric:.2f}".rstrip("0").rstrip(".")
 
 
 def bucket_rate_stats(values: list[float], width: int) -> list[RateBucket]:
@@ -265,9 +288,14 @@ def fitted_terminal_line(text: str, width: int) -> str:
     return "".join(result)
 
 
+def file_isatty(file) -> bool:
+    isatty = getattr(file, "isatty", None)
+    return bool(isatty()) if callable(isatty) else False
+
+
 def color_enabled(file) -> bool:
     return (
-        file.isatty()
+        file_isatty(file)
         and os.environ.get("TQDM_TREND_NO_COLOR") is None
         and os.environ.get("TERM") != "dumb"
     )
@@ -385,9 +413,9 @@ def render_rate_panel(
 ) -> list[str]:
     labels = [""] * height
     if height:
-        labels[0] = f"fast {compact_rate(graph.scale_high)}"
-        labels[height // 2] = f"avg {compact_rate(visible_avg)}"
-        labels[-1] = f"slow {compact_rate(graph.scale_low)}"
+        labels[0] = f"fast {format_rate(graph.scale_high)}"
+        labels[height // 2] = f"avg {format_rate(visible_avg)}"
+        labels[-1] = f"slow {format_rate(graph.scale_low)}"
 
     panel = []
     for row, (label, line) in enumerate(zip(labels, graph.lines)):
@@ -410,8 +438,8 @@ def smart_info_lines(
     direction: str,
     current_rate: float,
     graph: RateGraph,
-    completed: int,
-    total: int | None,
+    completed: float,
+    total: float | int | None,
     height: int,
 ) -> list[str]:
     confidence = (
@@ -423,15 +451,19 @@ def smart_info_lines(
         f"model {estimate.label}",
         confidence,
         direction,
-        f"now {current_rate:.2f} it/s",
+        f"now {format_rate(current_rate)}",
         f"window {graph.visible_samples}{clipped}",
-        f"{completed}/{total}" if total is not None else f"{completed}",
+        (
+            f"{compact_count(completed)}/{compact_count(total)}"
+            if total is not None
+            else compact_count(completed)
+        ),
     ]
     return (lines + [""] * height)[:height]
 
 
 def reserve_terminal_panel(file, height: int) -> bool:
-    if height <= 0 or not file.isatty():
+    if height <= 0 or not file_isatty(file):
         return False
 
     file.write("\n" * height)
@@ -449,6 +481,20 @@ def draw_terminal_panel(file, lines: list[str], columns: int) -> None:
     for row, line in enumerate(lines):
         file.write("\r\x1b[2K")
         file.write(fitted_terminal_line(line, columns - 1))
+        if row < height - 1:
+            file.write("\n")
+    file.write("\x1b8")
+    file.flush()
+
+
+def clear_terminal_panel(file, height: int) -> None:
+    if height <= 0:
+        return
+
+    file.write("\x1b7")
+    file.write(f"\x1b[{height}A")
+    for row in range(height):
+        file.write("\r\x1b[2K")
         if row < height - 1:
             file.write("\n")
     file.write("\x1b8")
@@ -474,7 +520,7 @@ def rate_direction(values: list[float]) -> str:
     return f"flat, jitter {jitter:.0%}"
 
 
-def smart_eta(durations: list[float], remaining: int) -> EtaEstimate:
+def smart_eta(durations: list[float], remaining: float) -> EtaEstimate:
     """Estimate remaining time from recent duration trend."""
     if remaining <= 0:
         return EtaEstimate(0.0, "done", confidence=1.0)
@@ -497,13 +543,19 @@ def smart_eta(durations: list[float], remaining: int) -> EtaEstimate:
     if abs(slope) < 0.02 or r_squared < 0.55:
         return EtaEstimate(avg_eta, "recent avg")
 
-    projected = 0.0
-    capped = False
-    for step in range(len(recent), len(recent) + remaining):
-        projected += math.exp(intercept + slope * step)
-        if projected > avg_eta * 50 and projected > 60:
-            capped = True
-            break
+    try:
+        first = math.exp(intercept + slope * len(recent))
+        ratio = math.exp(slope)
+        if math.isclose(ratio, 1.0):
+            projected = first * remaining
+        else:
+            projected = first * (math.pow(ratio, remaining) - 1.0) / (ratio - 1.0)
+    except OverflowError:
+        projected = float("inf")
+
+    capped = projected > avg_eta * 50 and projected > 60
+    if capped:
+        projected = max(avg_eta * 50, 60)
 
     if slope > 0.03:
         label = "exp slowing"
@@ -516,163 +568,217 @@ def smart_eta(durations: list[float], remaining: int) -> EtaEstimate:
     return EtaEstimate(projected, label, confidence=r_squared, capped=capped)
 
 
-class TrendTqdm(Iterable[T]):
-    """A tqdm-compatible iterable wrapper with a rate trend panel."""
+class TrendTqdm(base_tqdm):
+    """A tqdm-compatible progress bar with an optional rate trend panel."""
 
     def __init__(
         self,
-        iterable: Iterable[T],
-        *,
-        desc: str = "",
-        total: int | None = None,
+        *args,
         graph_width: int = 68,
         graph_height: int = 8,
         graph_refresh_interval: float = 0.12,
+        **kwargs,
     ) -> None:
-        self.iterable = iterable
-        if total is None:
-            try:
-                total = len(iterable)  # type: ignore[arg-type]
-            except TypeError:
-                total = None
-        self.total = total
-        self.desc = desc
         self.graph_width = graph_width
         self.graph_height = graph_height
         self.graph_refresh_interval = graph_refresh_interval
         self.durations: list[float] = []
         self.rates: list[float] = []
+        self._twoqdm_output = kwargs.get("file") or sys.stderr
+        self._twoqdm_last_sample = time.perf_counter()
+        self._twoqdm_next_graph_refresh = 0.0
+        self._twoqdm_panel_height = self._panel_height()
+        self._twoqdm_panel_reserved = False
+        self._twoqdm_panel_owner = False
+        self._twoqdm_manage_postfix = "postfix" not in kwargs
+        self._twoqdm_setting_auto_postfix = False
 
-    def __iter__(self) -> Iterator[T]:
-        output = sys.stderr
+        use_color = color_enabled(self._twoqdm_output)
+        kwargs.setdefault("colour", "cyan" if use_color else None)
+        self._reserve_panel_if_available(kwargs)
+        try:
+            super().__init__(*args, **kwargs)
+        except Exception:
+            self._release_panel()
+            raise
+
+    def _panel_height(self) -> int:
         size = terminal_size()
-        panel_height = min(self.graph_height, max(3, size.lines - 4))
-        label_width = 12
-        info_width = info_width_for_terminal(size.columns)
-        use_color = color_enabled(output)
-        panel_reserved = reserve_terminal_panel(output, panel_height)
-        progress = base_tqdm(
-            total=self.total,
-            desc=self.desc,
-            leave=True,
-            dynamic_ncols=True,
-            colour="cyan" if use_color else None,
-            bar_format=(
-                "{l_bar}{bar}| "
-                "{n_fmt}/{total_fmt} [{elapsed}<{remaining}{postfix}]"
-            ),
-            file=output,
-        )
+        available = size.lines - 4
+        if self.graph_height <= 0 or available < 3:
+            return 0
+        return min(self.graph_height, available)
+
+    def _reserve_panel_if_available(self, kwargs) -> None:
+        global _ACTIVE_PANEL_DEPTH
+
+        position = kwargs.get("position")
+        if (
+            kwargs.get("disable") is True
+            or self._twoqdm_panel_height <= 0
+            or position not in (None, 0)
+            or _ACTIVE_PANEL_DEPTH > 0
+        ):
+            return
+
+        if reserve_terminal_panel(self._twoqdm_output, self._twoqdm_panel_height):
+            self._twoqdm_panel_reserved = True
+            self._twoqdm_panel_owner = True
+            _ACTIVE_PANEL_DEPTH += 1
+
+    def _release_panel(self) -> None:
+        global _ACTIVE_PANEL_DEPTH
+
+        if self._twoqdm_panel_owner:
+            _ACTIVE_PANEL_DEPTH = max(0, _ACTIVE_PANEL_DEPTH - 1)
+            self._twoqdm_panel_owner = False
+
+    def __iter__(self):
+        if self.disable:
+            for obj in self.iterable:
+                yield obj
+            return
 
         try:
-            last = time.perf_counter()
-            next_graph_refresh = 0.0
-            completed = 0
-            for item in self.iterable:
-                yield item
-                now = time.perf_counter()
-                duration = now - last
-                last = now
-                if duration <= 0:
-                    continue
-                progress.update(1)
-                completed += 1
-                self.durations.append(duration)
-                self.rates.append(1.0 / duration)
-                if self.total is None:
-                    estimate = EtaEstimate(None, "unknown total")
-                else:
-                    remaining = max(self.total - completed, 0)
-                    estimate = smart_eta(self.durations, remaining)
-                direction = rate_direction(self.rates)
-                short_direction = direction.split(",", maxsplit=1)[0]
-                progress.set_postfix_str(
-                    (
-                        f"eta={format_seconds(estimate.seconds)} "
-                        f"{estimate.label}, {short_direction}"
-                    ),
-                    refresh=False,
-                )
-                if (
-                    now < next_graph_refresh
-                    and (self.total is None or completed < self.total)
-                ):
-                    continue
-
-                size = terminal_size()
-                info_width = info_width_for_terminal(size.columns)
-                graph_width = graph_width_for_terminal(
-                    self.graph_width,
-                    label_width,
-                    info_width,
-                    size.columns,
-                )
-                rendered = render_rate_graph(
-                    self.rates,
-                    width=graph_width,
-                    height=panel_height,
-                )
-                visible_rates = self.rates[-rendered.visible_samples :]
-                visible_avg = sum(visible_rates) / len(visible_rates)
-                info_lines = smart_info_lines(
-                    estimate,
-                    direction=direction,
-                    current_rate=self.rates[-1],
-                    graph=rendered,
-                    completed=completed,
-                    total=self.total,
-                    height=panel_height,
-                )
-                panel_lines = render_rate_panel(
-                    rendered,
-                    height=panel_height,
-                    label_width=label_width,
-                    info_width=info_width,
-                    visible_avg=visible_avg,
-                    info=info_lines,
-                    use_color=use_color,
-                )
-                if panel_reserved:
-                    draw_terminal_panel(output, panel_lines, size.columns)
-                progress.refresh()
-                next_graph_refresh = now + self.graph_refresh_interval
+            for obj in self.iterable:
+                yield obj
+                self.update(1)
         finally:
-            progress.close()
+            self.close()
+
+    def update(self, n=1):
+        result = super().update(n)
+        self._record_trend_sample(n)
+        return result
+
+    def set_postfix(self, ordered_dict=None, refresh=True, **kwargs):
+        if not getattr(self, "_twoqdm_setting_auto_postfix", False):
+            self._twoqdm_manage_postfix = False
+        return super().set_postfix(ordered_dict, refresh=refresh, **kwargs)
+
+    def set_postfix_str(self, s="", refresh=True):
+        if not getattr(self, "_twoqdm_setting_auto_postfix", False):
+            self._twoqdm_manage_postfix = False
+        return super().set_postfix_str(s, refresh=refresh)
+
+    def _record_trend_sample(self, n) -> None:
+        if getattr(self, "disable", False):
+            return
+
+        now = time.perf_counter()
+        duration = now - self._twoqdm_last_sample
+        self._twoqdm_last_sample = now
+        try:
+            increment = float(n)
+        except (TypeError, ValueError):
+            return
+        if increment <= 0 or duration <= 0:
+            return
+
+        self.durations.append(duration / increment)
+        self.rates.append(increment / duration)
+        estimate = self._eta_estimate()
+        direction = rate_direction(self.rates)
+        self._set_auto_postfix(estimate, direction)
+        self._render_trend_panel(now, estimate, direction)
+
+    def _eta_estimate(self) -> EtaEstimate:
+        if self.total is None:
+            return EtaEstimate(None, "unknown total")
+
+        try:
+            remaining = max(float(self.total) - float(self.n), 0.0)
+        except (TypeError, ValueError):
+            return EtaEstimate(None, "unknown total")
+        return smart_eta(self.durations, remaining)
+
+    def _set_auto_postfix(self, estimate: EtaEstimate, direction: str) -> None:
+        if not self._twoqdm_manage_postfix:
+            return
+
+        short_direction = direction.split(",", maxsplit=1)[0]
+        self._twoqdm_setting_auto_postfix = True
+        try:
+            super().set_postfix_str(
+                (
+                    f"eta={format_seconds(estimate.seconds)} "
+                    f"{estimate.label}, {short_direction}"
+                ),
+                refresh=False,
+            )
+        finally:
+            self._twoqdm_setting_auto_postfix = False
+
+    def _render_trend_panel(
+        self,
+        now: float,
+        estimate: EtaEstimate,
+        direction: str,
+    ) -> None:
+        if not self._twoqdm_panel_reserved:
+            return
+        if now < self._twoqdm_next_graph_refresh and (
+            self.total is None or self.n < self.total
+        ):
+            return
+
+        size = terminal_size()
+        label_width = 16
+        info_width = info_width_for_terminal(size.columns)
+        graph_width = graph_width_for_terminal(
+            self.graph_width,
+            label_width,
+            info_width,
+            size.columns,
+        )
+        rendered = render_rate_graph(
+            self.rates,
+            width=graph_width,
+            height=self._twoqdm_panel_height,
+        )
+        visible_rates = self.rates[-rendered.visible_samples :]
+        visible_avg = sum(visible_rates) / len(visible_rates)
+        info_lines = smart_info_lines(
+            estimate,
+            direction=direction,
+            current_rate=self.rates[-1],
+            graph=rendered,
+            completed=float(self.n),
+            total=self.total,
+            height=self._twoqdm_panel_height,
+        )
+        panel_lines = render_rate_panel(
+            rendered,
+            height=self._twoqdm_panel_height,
+            label_width=label_width,
+            info_width=info_width,
+            visible_avg=visible_avg,
+            info=info_lines,
+            use_color=color_enabled(self._twoqdm_output),
+        )
+        draw_terminal_panel(self._twoqdm_output, panel_lines, size.columns)
+        self.refresh()
+        self._twoqdm_next_graph_refresh = now + self.graph_refresh_interval
+
+    def close(self) -> None:
+        if getattr(self, "_twoqdm_panel_reserved", False) and not getattr(
+            self, "leave", True
+        ):
+            clear_terminal_panel(self._twoqdm_output, self._twoqdm_panel_height)
+        try:
+            super().close()
+        finally:
+            self._release_panel()
 
 
-def tqdm(
-    iterable: Iterable[T],
-    *,
-    desc: str = "",
-    total: int | None = None,
-    graph_width: int = 68,
-    graph_height: int = 8,
-    graph_refresh_interval: float = 0.12,
-) -> TrendTqdm[T]:
-    """Wrap an iterable with a trend-aware tqdm progress display."""
-    return TrendTqdm(
-        iterable,
-        desc=desc,
-        total=total,
-        graph_width=graph_width,
-        graph_height=graph_height,
-        graph_refresh_interval=graph_refresh_interval,
-    )
+tqdm = TrendTqdm
 
 
 def trange(
     *args: int,
-    desc: str = "",
-    graph_width: int = 68,
-    graph_height: int = 8,
-    graph_refresh_interval: float = 0.12,
+    **kwargs,
 ) -> TrendTqdm[int]:
     """Trend-aware equivalent of tqdm.trange."""
-    return tqdm(
-        range(*args),
-        desc=desc,
-        total=len(range(*args)),
-        graph_width=graph_width,
-        graph_height=graph_height,
-        graph_refresh_interval=graph_refresh_interval,
-    )
+    iterable = range(*args)
+    kwargs.setdefault("total", len(iterable))
+    return TrendTqdm(iterable, **kwargs)
