@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "twoqdm"
-version = "0.2.0"
-description = "tqdm with a live terminal rate graph and smarter ETA."
+version = "0.3.0"
+description = "tqdm with a live rate graph, smarter ETA, and ASCII animations."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
     { name = "Eric Bennett" }
 ]
-keywords = ["tqdm", "progress", "progress-bar", "terminal", "eta"]
+keywords = ["tqdm", "progress", "progress-bar", "terminal", "eta", "ascii"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -27,6 +27,11 @@ classifiers = [
 dependencies = [
     "tqdm>=4.66",
 ]
+
+[project.urls]
+Homepage = "https://github.com/softly-undefined/twoqdm"
+Repository = "https://github.com/softly-undefined/twoqdm"
+Issues = "https://github.com/softly-undefined/twoqdm/issues"
 
 [project.optional-dependencies]
 dev = [

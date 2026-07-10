@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import secrets
 import shutil
 import sys
 import time
@@ -33,6 +34,15 @@ RED = "\x1b[38;5;203m"
 BLUE = "\x1b[38;5;111m"
 GRAY = "\x1b[38;5;245m"
 DARK_GRAY = "\x1b[38;5;240m"
+SPINNER_RAINBOW = (
+    RED,
+    YELLOW,
+    GREEN,
+    CYAN,
+    BLUE,
+    "\x1b[38;5;177m",
+    "\x1b[38;5;213m",
+)
 UP_GRADIENT = [
     YELLOW,
     "\x1b[38;5;190m",
@@ -47,6 +57,258 @@ DOWN_GRADIENT = [
     "\x1b[38;5;208m",
     RED,
 ]
+# Compact terminal loops are embedded to keep twoqdm's only runtime dependency
+# as tqdm.
+ASCII_SPINNERS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "coffee": (
+        (
+            "   (   )  ",
+            "    ) (   ",
+            "   (   )  ",
+            "  .----.  ",
+            "  |~~~~|] ",
+            "  |____|  ",
+            "   `--'   ",
+            "          ",
+        ),
+        (
+            "    ) (   ",
+            "   (   )  ",
+            "    ) (   ",
+            "  .----.  ",
+            "  |~~~~|] ",
+            "  |____|  ",
+            "   `--'   ",
+            "          ",
+        ),
+        (
+            "   ) (    ",
+            "    (     ",
+            "   ) (    ",
+            "  .----.  ",
+            "  |-~~-|] ",
+            "  |____|  ",
+            "   `--'   ",
+            "          ",
+        ),
+        (
+            "    (     ",
+            "   ) (    ",
+            "    (     ",
+            "  .----.  ",
+            "  |~~~~|] ",
+            "  |____|  ",
+            "   `--'   ",
+            "          ",
+        ),
+    ),
+    "train": (
+        (
+            "       ( )  ",
+            "      (@)   ",
+            "     __||_  ",
+            " __|_[]_|__ ",
+            "|  _     _| ",
+            "'-(o)---(o)'",
+            "=_========_=",
+            "            ",
+        ),
+        (
+            "     ( )    ",
+            "       (@)  ",
+            "     __||_  ",
+            " __|_[]_|__ ",
+            "|  _     _| ",
+            "'-(O)---(O)'",
+            "==_========_",
+            "            ",
+        ),
+        (
+            "    ( )     ",
+            "     (@)    ",
+            "     __||_  ",
+            " __|_[]_|__ ",
+            "|  _     _| ",
+            "'-(o)---(o)'",
+            "===_========",
+            "            ",
+        ),
+        (
+            "      ( )   ",
+            "    (@)     ",
+            "     __||_  ",
+            " __|_[]_|__ ",
+            "|  _     _| ",
+            "'-(O)---(O)'",
+            "_========_==",
+            "            ",
+        ),
+    ),
+    "conveyor": (
+        (
+            "            ",
+            "+-+   +-+   ",
+            "|#|   |#|   ",
+            "+-+===+-+===",
+            "o o o o o o ",
+            "============",
+            "            ",
+            "            ",
+        ),
+        (
+            "            ",
+            " +-+   +-+  ",
+            " |#|   |#|  ",
+            "=+-+===+-+==",
+            " o o o o o o",
+            "============",
+            "            ",
+            "            ",
+        ),
+        (
+            "            ",
+            "  +-+   +-+ ",
+            "  |#|   |#| ",
+            "==+-+===+-+=",
+            "o o o o o o ",
+            "============",
+            "            ",
+            "            ",
+        ),
+        (
+            "            ",
+            "   +-+   +-+",
+            "   |#|   |#|",
+            "===+-+===+-+",
+            " o o o o o o",
+            "============",
+            "            ",
+            "            ",
+        ),
+        (
+            "            ",
+            "+   +-+   +-",
+            "|   |#|   |#",
+            "+===+-+===+-",
+            "o o o o o o ",
+            "============",
+            "            ",
+            "            ",
+        ),
+        (
+            "            ",
+            "-+   +-+   +",
+            "#|   |#|   |",
+            "-+===+-+===+",
+            " o o o o o o",
+            "============",
+            "            ",
+            "            ",
+        ),
+    ),
+    "sand-pile": (
+        (
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "____________",
+        ),
+        (
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "____/##\\____",
+        ),
+        (
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     #      ",
+            "____/##\\____",
+        ),
+        (
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "    /##\\    ",
+            "___/####\\___",
+        ),
+        (
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     #      ",
+            "    /##\\    ",
+            "___/####\\___",
+        ),
+        (
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "    /##\\    ",
+            "   /####\\   ",
+            "__/######\\__",
+        ),
+        (
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     #      ",
+            "    /##\\    ",
+            "   /####\\   ",
+            "__/######\\__",
+        ),
+        (
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "    /##\\    ",
+            "   /####\\   ",
+            "  /######\\  ",
+            "_/########\\_",
+        ),
+        (
+            "     .      ",
+            "     .      ",
+            "     .      ",
+            "     #      ",
+            "    /##\\    ",
+            "   /####\\   ",
+            "  /######\\  ",
+            "_/########\\_",
+        ),
+        (
+            "     .      ",
+            "     .      ",
+            "     #      ",
+            "    /##\\    ",
+            "   /####\\   ",
+            "  /######\\  ",
+            " /########\\ ",
+            "/##########\\",
+        ),
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -307,6 +569,86 @@ def colored(text: str, color: str, *, enabled: bool) -> str:
     return f"{color}{text}{RESET}"
 
 
+def available_ascii_spinners() -> tuple[str, ...]:
+    return tuple(ASCII_SPINNERS)
+
+
+def normalize_ascii_spinner(value: str | bool | None) -> str | None:
+    if value is None or value is False:
+        return None
+    if value is True:
+        return secrets.choice(available_ascii_spinners())
+
+    key = str(value).strip().lower().replace("_", "-")
+    if key in {"", "0", "false", "no", "none", "off"}:
+        return None
+    if key == "random":
+        return secrets.choice(available_ascii_spinners())
+
+    if key not in ASCII_SPINNERS:
+        choices = ", ".join(("random", *available_ascii_spinners()))
+        raise ValueError(f"unknown ascii_spinner {value!r}; choose one of: {choices}")
+    return key
+
+
+def ascii_spinner_lines(
+    name: str | None,
+    *,
+    elapsed: float,
+    height: int,
+    interval: float,
+    progress: float | None = None,
+) -> list[str]:
+    if not name or height <= 0:
+        return []
+
+    frames = ASCII_SPINNERS[name]
+    if name == "sand-pile" and progress is not None and math.isfinite(progress):
+        fraction = min(max(progress, 0.0), 1.0)
+        frame_index = int(fraction * (len(frames) - 1) + 0.5)
+    else:
+        frame_interval = max(interval, 1e-9)
+        frame_index = int(elapsed / frame_interval) % len(frames)
+    frame = frames[frame_index]
+    width = max(visible_len(line) for candidate in frames for line in candidate)
+    return [f"{line:<{width}}" for line in (list(frame) + [""] * height)[:height]]
+
+
+def info_sidecar_widths(
+    width: int,
+    sidecar: list[str],
+    *,
+    min_info_width: int = 14,
+) -> tuple[int, int] | None:
+    if not sidecar:
+        return None
+
+    sidecar_width = max((visible_len(line) for line in sidecar), default=0)
+    if sidecar_width <= 0:
+        return None
+
+    gap = 1
+    info_width = width - sidecar_width - gap
+    if info_width < min_info_width:
+        return None
+
+    return info_width, sidecar_width
+
+
+def rainbow_spinner_text(
+    text: str,
+    *,
+    row: int,
+    phase: int,
+    enabled: bool,
+) -> str:
+    if not enabled or not text:
+        return text
+
+    color = SPINNER_RAINBOW[phase % len(SPINNER_RAINBOW)]
+    return colored(text, color, enabled=True)
+
+
 def trace_color(delta: float | None, span: float) -> str:
     if delta is None or span <= 0:
         return YELLOW
@@ -410,12 +752,19 @@ def render_rate_panel(
     visible_avg: float,
     info: list[str],
     use_color: bool,
+    sidecar: list[str] | None = None,
+    sidecar_color_phase: int = 0,
 ) -> list[str]:
     labels = [""] * height
     if height:
         labels[0] = f"fast {format_rate(graph.scale_high)}"
         labels[height // 2] = f"avg {format_rate(visible_avg)}"
         labels[-1] = f"slow {format_rate(graph.scale_low)}"
+
+    sidecar = sidecar or []
+    sidecar_widths = info_sidecar_widths(info_width, sidecar)
+    text_width = sidecar_widths[0] if sidecar_widths else info_width
+    spinner_width = sidecar_widths[1] if sidecar_widths else 0
 
     panel = []
     for row, (label, line) in enumerate(zip(labels, graph.lines)):
@@ -425,9 +774,20 @@ def render_rate_panel(
         rail = colored("|", GRAY, enabled=use_color)
         graph_line = color_graph_line(line, graph=graph, enabled=use_color)
         right = info[row] if row < len(info) else ""
-        right = fitted_terminal_line(right, info_width)
-        right_text = f"{right:<{info_width}}"
+        right = fitted_terminal_line(right, text_width)
+        right_text = f"{right:<{text_width}}"
         right_text = colored(right_text, info_color(right), enabled=use_color)
+        if sidecar_widths:
+            spinner = sidecar[row] if row < len(sidecar) else ""
+            spinner = fitted_terminal_line(spinner, spinner_width)
+            spinner_text = f"{spinner:<{spinner_width}}"
+            spinner_text = rainbow_spinner_text(
+                spinner_text,
+                row=row,
+                phase=sidecar_color_phase,
+                enabled=use_color,
+            )
+            right_text = f"{right_text} {spinner_text}"
         panel.append(f"{label_text}{rail}{graph_line}{rail} {right_text}")
     return panel
 
@@ -498,6 +858,30 @@ def clear_terminal_panel(file, height: int) -> None:
         if row < height - 1:
             file.write("\n")
     file.write("\x1b8")
+    file.flush()
+
+
+def resize_terminal_panel(
+    file,
+    panel_lines: list[str],
+    bar_width: int,
+    *,
+    columns: int,
+    new_height: int,
+) -> None:
+    """Clear wrapped display rows and re-anchor the resized panel."""
+    columns = max(columns, 1)
+    line_widths = [visible_len(line) for line in panel_lines]
+    physical_rows = sum(max(1, math.ceil(width / columns)) for width in line_widths)
+    physical_rows += max(1, math.ceil(max(bar_width, 1) / columns))
+
+    file.write("\r")
+    for row in range(physical_rows):
+        file.write("\x1b[2K")
+        if row < physical_rows - 1:
+            file.write("\x1b[1A")
+    file.write("\r")
+    file.write("\n" * new_height)
     file.flush()
 
 
@@ -577,33 +961,51 @@ class TrendTqdm(base_tqdm):
         graph_width: int = 68,
         graph_height: int = 8,
         graph_refresh_interval: float = 0.12,
+        ascii_spinner: str | bool | None = True,
+        ascii_spinner_interval: float = 0.10,
         **kwargs,
     ) -> None:
+        self.disable = True
+        self._twoqdm_panel_height = 0
+        self._twoqdm_panel_reserved = False
+        self._twoqdm_panel_owner = False
+        self._twoqdm_resize_ready = False
+        self._twoqdm_last_panel_lines: list[str] = []
+        self._twoqdm_last_bar_width = 0
         self.graph_width = graph_width
         self.graph_height = graph_height
         self.graph_refresh_interval = graph_refresh_interval
+        self.ascii_spinner = normalize_ascii_spinner(ascii_spinner)
+        self.ascii_spinner_interval = ascii_spinner_interval
         self.durations: list[float] = []
         self.rates: list[float] = []
         self._twoqdm_output = kwargs.get("file") or sys.stderr
         self._twoqdm_last_sample = time.perf_counter()
+        self._twoqdm_spinner_started = self._twoqdm_last_sample
         self._twoqdm_next_graph_refresh = 0.0
-        self._twoqdm_panel_height = self._panel_height()
-        self._twoqdm_panel_reserved = False
-        self._twoqdm_panel_owner = False
+        self._twoqdm_terminal_size = terminal_size()
+        self._twoqdm_panel_height = self._panel_height(self._twoqdm_terminal_size)
         self._twoqdm_manage_postfix = "postfix" not in kwargs
         self._twoqdm_setting_auto_postfix = False
 
         use_color = color_enabled(self._twoqdm_output)
         kwargs.setdefault("colour", "cyan" if use_color else None)
+        if "dynamic_ncols" not in kwargs:
+            kwargs["dynamic_ncols"] = (
+                "ncols" not in kwargs and file_isatty(self._twoqdm_output)
+            )
         self._reserve_panel_if_available(kwargs)
         try:
             super().__init__(*args, **kwargs)
         except Exception:
             self._release_panel()
             raise
+        self._twoqdm_last_panel_lines = [""] * self._twoqdm_panel_height
+        self._twoqdm_last_bar_width = visible_len(str(self))
+        self._twoqdm_resize_ready = True
 
-    def _panel_height(self) -> int:
-        size = terminal_size()
+    def _panel_height(self, size: os.terminal_size | None = None) -> int:
+        size = size or terminal_size()
         available = size.lines - 4
         if self.graph_height <= 0 or available < 3:
             return 0
@@ -633,6 +1035,34 @@ class TrendTqdm(base_tqdm):
             _ACTIVE_PANEL_DEPTH = max(0, _ACTIVE_PANEL_DEPTH - 1)
             self._twoqdm_panel_owner = False
 
+    def _resize_panel_if_needed(self, size: os.terminal_size) -> bool:
+        if size == self._twoqdm_terminal_size:
+            return False
+
+        new_height = self._panel_height(size)
+        resize_terminal_panel(
+            self._twoqdm_output,
+            self._twoqdm_last_panel_lines,
+            self._twoqdm_last_bar_width,
+            columns=size.columns,
+            new_height=new_height,
+        )
+        self.sp = self.status_printer(self.fp)
+        self._twoqdm_terminal_size = size
+        self._twoqdm_panel_height = new_height
+        self._twoqdm_last_panel_lines = [""] * new_height
+        self._twoqdm_last_bar_width = 0
+        self._twoqdm_next_graph_refresh = 0.0
+        return True
+
+    def _refresh_progress_line(self) -> None:
+        self._twoqdm_output.write("\r\x1b[2K")
+        self._twoqdm_output.flush()
+        # tqdm otherwise pads back to its cached pre-resize line length.
+        self.sp = self.status_printer(self.fp)
+        super().refresh()
+        self._twoqdm_last_bar_width = visible_len(str(self))
+
     def __iter__(self):
         if self.disable:
             for obj in self.iterable:
@@ -647,6 +1077,8 @@ class TrendTqdm(base_tqdm):
             self.close()
 
     def update(self, n=1):
+        if self._twoqdm_resize_ready and self._twoqdm_panel_reserved:
+            self._resize_panel_if_needed(terminal_size())
         result = super().update(n)
         self._record_trend_sample(n)
         return result
@@ -717,12 +1149,17 @@ class TrendTqdm(base_tqdm):
     ) -> None:
         if not self._twoqdm_panel_reserved:
             return
-        if now < self._twoqdm_next_graph_refresh and (
+        size = terminal_size()
+        resized = self._resize_panel_if_needed(size)
+        if not resized and now < self._twoqdm_next_graph_refresh and (
             self.total is None or self.n < self.total
         ):
             return
+        if self._twoqdm_panel_height <= 0:
+            self._refresh_progress_line()
+            self._twoqdm_next_graph_refresh = now + self.graph_refresh_interval
+            return
 
-        size = terminal_size()
         label_width = 16
         info_width = info_width_for_terminal(size.columns)
         graph_width = graph_width_for_terminal(
@@ -747,6 +1184,26 @@ class TrendTqdm(base_tqdm):
             total=self.total,
             height=self._twoqdm_panel_height,
         )
+        spinner_progress = None
+        if self.total is not None:
+            try:
+                completed = float(self.n)
+                total = float(self.total)
+                if math.isfinite(completed) and math.isfinite(total):
+                    if total > 0:
+                        spinner_progress = completed / total
+                    elif total == 0:
+                        spinner_progress = 1.0
+            except (TypeError, ValueError):
+                pass
+        spinner_lines = ascii_spinner_lines(
+            self.ascii_spinner,
+            elapsed=now - self._twoqdm_spinner_started,
+            height=self._twoqdm_panel_height,
+            interval=self.ascii_spinner_interval,
+            progress=spinner_progress,
+        )
+        spinner_color_phase = int((now - self._twoqdm_spinner_started) / 1.20)
         panel_lines = render_rate_panel(
             rendered,
             height=self._twoqdm_panel_height,
@@ -755,9 +1212,19 @@ class TrendTqdm(base_tqdm):
             visible_avg=visible_avg,
             info=info_lines,
             use_color=color_enabled(self._twoqdm_output),
+            sidecar=spinner_lines,
+            sidecar_color_phase=spinner_color_phase,
         )
-        draw_terminal_panel(self._twoqdm_output, panel_lines, size.columns)
-        self.refresh()
+        drawn_panel_lines = [
+            fitted_terminal_line(line, size.columns - 1) for line in panel_lines
+        ]
+        draw_terminal_panel(
+            self._twoqdm_output,
+            drawn_panel_lines,
+            size.columns,
+        )
+        self._twoqdm_last_panel_lines = drawn_panel_lines
+        self._refresh_progress_line()
         self._twoqdm_next_graph_refresh = now + self.graph_refresh_interval
 
     def close(self) -> None:
